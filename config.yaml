@@ -1,0 +1,37 @@
+# Multi-Person Detection System Configuration
+
+# Input settings
+input:
+  type: "single"               # "single" or "grid"
+  grid_size: [2, 2]            # [rows, cols] - only used if type is "grid"
+  video_path: "data/input.mp4" # Path to input video file
+
+# Processing settings
+processing:
+  resolution: 1080             # Target height resolution (null for original)
+  use_gpu: false               # Use GPU acceleration (requires CUDA)
+
+# Tracking settings
+tracking:
+  algorithm: "deepsort"        # Tracking algorithm (currently using custom tracker)
+  max_age: 30                  # Maximum frames to keep track without update
+  min_hits: 3                  # Minimum hits before track is confirmed
+
+# Re-Identification settings (future feature)
+reid:
+  enabled: false               # Enable ReID for cross-camera tracking
+  model: "osnet"               # ReID model name
+
+# Output settings
+output:
+  show_ui: true                # Display real-time UI dashboard
+  save_video: true             # Save annotated output video
+  heatmap: true                # Generate activity heatmap
+  trajectories: true           # Generate movement trajectories
+
+# UI settings
+ui:
+  show_ids: true               # Display person IDs
+  show_paths: true             # Display movement paths
+  show_heatmap: true           # Display heatmap overlay
+  show_grid: false             # Show grid lines (for grid mode)
