@@ -7,7 +7,7 @@ from scipy.spatial.distance import cosine
 from collections import deque
 
 # ---------------- CONFIG ----------------
-MODEL_PATH = "yolov8m.pt"
+MODEL_PATH = "yolov8n.pt"
 VIDEO_PATH = r"C:\Users\HP\Downloads\CCTV_Camera_Effect_-_Adobe_After_Effects_720p.mp4"
 
 FRAME_SKIP = 2
@@ -37,12 +37,25 @@ last_reid_frame = {}    # (cam_id, local_track_id) -> last frame idx
 next_global_id = 1
 
 # ---------------- PREPROCESS ----------------
-def preprocess(frame):
+def preprocess_gray(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
     return enhanced
+
+def preprocess_color(frame):
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+
+    merged = cv2.merge((l, a, b))
+    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+
+def is_grayscale(frame):
+    return np.mean(np.abs(frame[:, :, 0] - frame[:, :, 1])) < 2
 
 # ---------------- FEATURE ----------------
 def normalize_feature(feat):
@@ -137,11 +150,14 @@ def select_gid(feature, cam_id, frame_idx, current_gid=None):
 
 # ---------------- MAIN ----------------
 def main():
+    global next_global_id
     cap = cv2.VideoCapture(VIDEO_PATH)
     if not cap.isOpened():
         print("Error opening video")
         return
 
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = None
     frame_count = 0
     last_results = [None, None, None, None]
 
@@ -166,7 +182,10 @@ def main():
 
         for i, cam in enumerate(cams):
             cam_display = cam.copy()
-            proc_cam = preprocess(cam)
+            if is_grayscale(cam):
+                proc_cam = preprocess_gray(cam)
+            else:
+                proc_cam = preprocess_color(cam)
 
             if frame_count % FRAME_SKIP == 0:
                 results = yolo_model.track(
@@ -175,7 +194,7 @@ def main():
                     classes=[0],
                     conf=0.15,
                     iou=0.5,
-                    imgsz=960,
+                    imgsz=640,
                     verbose=False
                 )
 
@@ -183,7 +202,7 @@ def main():
                     results = yolo_model(
                         proc_cam,
                         conf=0.15,
-                        imgsz=960,
+                        imgsz=640,
                         verbose=False
                     )
 
@@ -203,7 +222,9 @@ def main():
                 for box, tid, conf in zip(boxes, track_ids, confs):
                     x1, y1, x2, y2 = map(int, box)
                     if tid is None:
-                        key = (i, int(x1 / 10), int(y1 / 10))
+                        cx = int((x1 + x2) / 2)
+                        cy = int((y1 + y2) / 2)
+                        key = (i, cx // 20, cy // 20)
                     else:
                         key = (i, tid)
 
@@ -211,6 +232,9 @@ def main():
 
                     # Always assign an ID if it does not exist yet.
                     if current_gid is None:
+
+                        if not is_good_crop(box, conf, cam.shape):
+                            continue
 
                         feat = extract_feature(cam, box)
 
@@ -225,7 +249,6 @@ def main():
 
                         # Case 2: Feature fails -> fallback ID.
                         else:
-                            global next_global_id
                             selected_gid = next_global_id
                             next_global_id += 1
 
@@ -244,6 +267,9 @@ def main():
                         reid_ready = (frame_count - last_reid_frame.get(key, -REID_INTERVAL)) >= REID_INTERVAL
 
                         if reid_ready:
+                            if not is_good_crop(box, conf, cam.shape):
+                                continue
+
                             feat = extract_feature(cam, box)
 
                             if feat is not None:
@@ -281,12 +307,18 @@ def main():
             np.hstack((processed[2], processed[3]))
         ))
 
+        if out is None:
+            out = cv2.VideoWriter("output/output.mp4", fourcc, 20.0, (grid.shape[1], grid.shape[0]))
+        out.write(grid)
+
         cv2.imshow("Multi-Camera Tracking", grid)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
+    if out is not None:
+        out.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
