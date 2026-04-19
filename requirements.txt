@@ -1,17 +1,17 @@
-# Multi-Person Detection System - Requirements
-
-# Core dependencies
-numpy>=1.21.0
-opencv-python>=4.5.0
-PyYAML>=6.0
-
-# Deep Learning
-ultralytics>=8.0.0          # YOLOv8
-torch>=2.0.0                # PyTorch (required by YOLO)
+# Core Deep Learning
+torch>=2.0.0
 torchvision>=0.15.0
 
-# Optional dependencies for enhanced features
-# Uncomment if needed:
-# scikit-learn>=1.0.0       # For advanced analytics
-# matplotlib>=3.5.0         # For plotting
-# pandas>=1.3.0             # For data analysis
+# Computer Vision
+opencv-python>=4.8.0
+ultralytics>=8.0.0
+
+# Person Re-Identification
+torchreid
+
+# Numerical Computing
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Configuration
+pyyaml>=6.0
