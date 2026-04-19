@@ -17,6 +17,7 @@ from ultralytics import YOLO
 from collections import defaultdict
 from src.reid.reid_manager import ReIDManager
 from src.utils.visualization import get_color, draw_bbox, draw_label
+from src.input.video_input import get_loader
 
 
 # Config
@@ -30,18 +31,7 @@ MAX_FEATURES_PER_ID = 20
 SPATIAL_DISTANCE_THRESHOLD = 200
 
 
-def load_camera_frames():
-    """Load frame paths from all cameras"""
-    cams = []
-    for cam in CAM_FOLDERS:
-        path = os.path.join(BASE_PATH, cam)
-        if not os.path.exists(path):
-            print(f"Warning: Camera folder not found: {path}")
-            continue
-        frames = sorted(os.listdir(path))
-        frames = [os.path.join(path, f) for f in frames if f.endswith((".jpg", ".jpeg", ".png"))]
-        cams.append(frames)
-    return cams
+# Removed - now using unified loader
 
 
 def visualize_detections(frames, detections, frame_idx, total_frames):
@@ -191,15 +181,12 @@ def main():
         yolo_model = YOLO(model_path)
     
     print("Loading camera frames...")
-    cams = load_camera_frames()
     
-    if len(cams) == 0:
-        print("Error: No camera frames found!")
-        return
+    # Unified loader for multi-camera
+    loader = get_loader('multi_camera', base_path=BASE_PATH, camera_folders=CAM_FOLDERS)
+    props = loader.get_properties()
     
-    min_len = min(len(cam) for cam in cams)
-    
-    print(f"\nFound {len(cams)} cameras with {min_len} frames each")
+    print(f"\nFound {props['num_cameras']} cameras with {props['num_frames']} frames each")
     print(f"Detection confidence: {CONFIDENCE_THRESHOLD}")
     print(f"Match threshold: {MATCH_THRESHOLD}")
     print("Processing frames... Press 'q' to quit\n")
@@ -208,12 +195,9 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = None
 
-    for frame_idx in range(min_len):
-        print(f"\rProcessing frame {frame_idx+1}/{min_len} | Active IDs: {reid_manager.get_active_count()}", 
+    for frames, frame_idx in loader:
+        print(f"\rProcessing frame {frame_idx+1}/{props['num_frames']} | Active IDs: {reid_manager.get_active_count()}", 
               end="", flush=True)
-        
-        # Load frames from all cameras
-        frames = [cv2.imread(cam[frame_idx]) for cam in cams]
         
         # Store all detections across cameras
         all_detections = []

@@ -1,4 +1,3 @@
-from .video_input import VideoInput
-from .grid_splitter import GridSplitter
+from .video_input import VideoInput, VideoLoader, MultiCameraLoader, get_loader
 
-__all__ = ['VideoInput', 'GridSplitter']
+__all__ = ['VideoInput', 'VideoLoader', 'MultiCameraLoader', 'get_loader']

@@ -17,6 +17,7 @@ from ultralytics import YOLO
 from collections import defaultdict, deque
 from src.utils.visualization import get_color, draw_bbox, draw_label
 from src.analytics.heatmap import Heatmap
+from src.input.video_input import get_loader
 
 
 def track_people(video_path, confidence=0.5, max_history=12):
@@ -33,16 +34,14 @@ def track_people(video_path, confidence=0.5, max_history=12):
     
     # Load model
     model = YOLO(os.path.join('..', 'models', 'yolov8n.pt'))
-    cap = cv2.VideoCapture(video_path)
-
-    if not cap.isOpened():
-        print(f"Error: Could not open video {video_path}")
-        return
-
-    fps = int(cap.get(cv2.CAP_PROP_FPS)) or 25
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
+    
+    # Unified loader
+    loader = get_loader('video', video_path=video_path)
+    props = loader.get_properties()
+    fps = props['fps']
+    width = props['width']
+    height = props['height']
+    
     print(f"Video: {width}x{height} @ {fps}fps")
 
     # Tracking data
@@ -62,12 +61,7 @@ def track_people(video_path, confidence=0.5, max_history=12):
 
     frame_count = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
-
+    for frame in loader:
         frame_count += 1
         current_ids = set()
 
@@ -196,7 +190,7 @@ def track_people(video_path, confidence=0.5, max_history=12):
         if cv2.waitKey(25) & 0xFF == ord('q'):
             break
 
-    cap.release()
+    loader.release()
     cv2.destroyAllWindows()
     print("\nTracking complete!")
 

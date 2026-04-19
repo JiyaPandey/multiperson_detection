@@ -1,4 +1,3 @@
-from .heatmap_generator import HeatmapGenerator
-from .trajectory_builder import TrajectoryBuilder
+from .heatmap import Heatmap
 
-__all__ = ['HeatmapGenerator', 'TrajectoryBuilder']
+__all__ = ['Heatmap']

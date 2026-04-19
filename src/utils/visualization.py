@@ -27,7 +27,7 @@ def get_color(gid, seed=True):
         return _id_colors[gid]
     
     if seed:
-        random.seed(gid)
+        random.seed(int(gid))
     
     color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
     _id_colors[gid] = color

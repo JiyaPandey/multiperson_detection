@@ -6,7 +6,7 @@ Handles feature extraction, matching, and global ID assignment
 import cv2
 import numpy as np
 import torch
-from torchreid.reid.utils import FeatureExtractor
+from torchreid.utils import FeatureExtractor
 from scipy.spatial.distance import cosine
 from collections import defaultdict, deque
 

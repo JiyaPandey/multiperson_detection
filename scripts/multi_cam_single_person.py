@@ -20,6 +20,7 @@ from scipy.spatial.distance import cosine
 from collections import deque
 from src.reid.reid_manager import ReIDManager
 from src.utils.visualization import get_color, draw_bbox, draw_label
+from src.input.video_input import get_loader
 
 
 # Config
@@ -179,10 +180,9 @@ def main():
     # Load YOLO model
     yolo_model = YOLO(MODEL_PATH)
     
-    cap = cv2.VideoCapture(VIDEO_PATH)
-    if not cap.isOpened():
-        print("Error opening video")
-        return
+    # Unified loader
+    loader = get_loader('video', video_path=VIDEO_PATH)
+    props = loader.get_properties()
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = None
@@ -191,12 +191,7 @@ def main():
 
     print("Processing... Press 'q' to quit")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
-
+    for frame in loader:
         frame_count += 1
         h, w, _ = frame.shape
 
@@ -350,7 +345,7 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
+    loader.release()
     if out is not None:
         out.release()
     cv2.destroyAllWindows()
