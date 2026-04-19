@@ -96,7 +96,14 @@ class MultiCameraLoader(FrameLoader):
             if not cam_path.exists():
                 raise FileNotFoundError(f"Camera folder not found: {cam_path}")
             
-            frames = sorted(cam_path.glob("*.jpg")) + sorted(cam_path.glob("*.png"))
+            frames = (
+                sorted(cam_path.glob("*.jpg"))
+                + sorted(cam_path.glob("*.jpeg"))
+                + sorted(cam_path.glob("*.png"))
+                + sorted(cam_path.glob("*.JPG"))
+                + sorted(cam_path.glob("*.JPEG"))
+                + sorted(cam_path.glob("*.PNG"))
+            )
             frames = [str(f) for f in frames]
             self.frame_lists.append(frames)
         

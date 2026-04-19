@@ -49,6 +49,218 @@ last_seen = {}          # gid -> (cam_id, frame_idx)
 last_reid_frame = {}    # (cam_id, local_track_id) -> last frame idx
 next_global_id = 1
 
+# =========================
+# GLOBAL STATE FOR DASHBOARD
+# =========================
+_reid_manager = None
+_yolo_model = None
+_loader = None
+_frame_count = 0
+_last_results = [None, None, None, None]
+_initialized = False
+
+
+def _initialize():
+    """Initialize global state (called once)"""
+    global _reid_manager, _yolo_model, _loader, _initialized
+    
+    if _initialized:
+        return
+    
+    print("[Multi-Cam-Single] Initializing...")
+    
+    # Initialize ReID manager
+    _reid_manager = ReIDManager(
+        model_name='osnet_x1_0',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        max_features_per_id=MAX_FEATURES,
+        match_threshold=MATCH_THRESHOLD
+    )
+    
+    # Load YOLO model
+    _yolo_model = YOLO(MODEL_PATH)
+    
+    # Unified loader
+    _loader = get_loader('video', video_path=VIDEO_PATH)
+    
+    _initialized = True
+    print("[Multi-Cam-Single] Initialized!")
+
+
+def run_pipeline():
+    """
+    Process one frame and return 2x2 grid visualization
+    Returns: (grid_frame, stats) or raises StopIteration when video ends
+    """
+    global _frame_count, _last_results, next_global_id
+    
+    _initialize()
+    
+    try:
+        frame = next(_loader)
+    except StopIteration:
+        # Reset and restart
+        _loader.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        _frame_count = 0
+        local_to_global.clear()
+        id_confidence.clear()
+        last_seen.clear()
+        last_reid_frame.clear()
+        next_global_id = 1
+        frame = next(_loader)
+    
+    _frame_count += 1
+    h, w, _ = frame.shape
+    
+    # Split frame into 4 cameras (2x2 grid)
+    cams = [
+        frame[0:h//2, 0:w//2],
+        frame[0:h//2, w//2:w],
+        frame[h//2:h, 0:w//2],
+        frame[h//2:h, w//2:w]
+    ]
+    
+    processed = []
+    matched_gids = set()
+    active_ids = set()
+    
+    for i, cam in enumerate(cams):
+        cam_display = cam.copy()
+        
+        # Preprocess based on frame type
+        if is_grayscale(cam):
+            proc_cam = preprocess_gray(cam)
+        else:
+            proc_cam = preprocess_color(cam)
+        
+        # Run detection/tracking
+        if _frame_count % FRAME_SKIP == 0:
+            results = _yolo_model.track(
+                proc_cam,
+                persist=True,
+                classes=[0],
+                conf=0.15,
+                iou=0.5,
+                imgsz=640,
+                verbose=False
+            )
+            
+            if results is None or results[0].boxes is None:
+                results = _yolo_model(proc_cam, conf=0.15, imgsz=640, verbose=False)
+            
+            _last_results[i] = results
+        else:
+            results = _last_results[i]
+        
+        if results and results[0].boxes is not None:
+            boxes = results[0].boxes.xyxy.cpu().numpy()
+            confs = results[0].boxes.conf.cpu().numpy()
+            
+            if results[0].boxes.id is not None:
+                track_ids = results[0].boxes.id.cpu().numpy().astype(int)
+            else:
+                track_ids = [None] * len(boxes)
+            
+            for box, tid, conf in zip(boxes, track_ids, confs):
+                x1, y1, x2, y2 = map(int, box)
+                
+                # Create key for local-to-global mapping
+                if tid is None:
+                    cx = int((x1 + x2) / 2)
+                    cy = int((y1 + y2) / 2)
+                    key = (i, cx // 20, cy // 20)
+                else:
+                    key = (i, tid)
+                
+                current_gid = local_to_global.get(key)
+                
+                # Assign new ID
+                if current_gid is None:
+                    if not is_good_crop(box, conf, cam.shape):
+                        continue
+                    
+                    feat = _reid_manager.extract_feature(cam, box)
+                    
+                    if feat is not None:
+                        selected_gid = select_gid(_reid_manager, feat, i, _frame_count, current_gid=None)
+                        
+                        if selected_gid is None:
+                            selected_gid = create_new_gid(_reid_manager, feat, i, _frame_count)
+                        
+                        update_global_db(_reid_manager, selected_gid, feat)
+                    else:
+                        # Fallback ID
+                        selected_gid = next_global_id
+                        next_global_id += 1
+                        _reid_manager.global_id_features[selected_gid] = deque(maxlen=MAX_FEATURES)
+                        id_confidence[selected_gid] = 0.3
+                        last_seen[selected_gid] = (i, _frame_count)
+                    
+                    local_to_global[key] = selected_gid
+                    last_reid_frame[key] = _frame_count
+                    update_confidence(selected_gid, matched=True)
+                    matched_gids.add(selected_gid)
+                
+                # Update existing ID
+                else:
+                    reid_ready = (_frame_count - last_reid_frame.get(key, -REID_INTERVAL)) >= REID_INTERVAL
+                    
+                    if reid_ready:
+                        if not is_good_crop(box, conf, cam.shape):
+                            continue
+                        
+                        feat = _reid_manager.extract_feature(cam, box)
+                        
+                        if feat is not None:
+                            selected_gid = select_gid(_reid_manager, feat, i, _frame_count, current_gid=current_gid)
+                            
+                            local_to_global[key] = selected_gid
+                            update_global_db(_reid_manager, selected_gid, feat)
+                            last_seen[selected_gid] = (i, _frame_count)
+                            last_reid_frame[key] = _frame_count
+                            update_confidence(selected_gid, matched=True)
+                            matched_gids.add(selected_gid)
+                
+                # Draw visualization
+                if key in local_to_global:
+                    gid = local_to_global[key]
+                    active_ids.add(gid)
+                    label = f"GID {gid}"
+                    color = get_color(gid)
+                else:
+                    label = f"TID {tid}" if tid is not None else "DET"
+                    color = (0, 0, 255)
+                
+                cv2.rectangle(cam_display, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(cam_display, label, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+        # Camera label
+        cv2.putText(cam_display, f"CAM {i+1}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        processed.append(cam_display)
+    
+    # Update confidence for non-matched IDs
+    for gid in list(id_confidence.keys()):
+        if gid not in matched_gids:
+            update_confidence(gid, matched=False)
+    
+    # Create 2x2 grid
+    grid = np.vstack((
+        np.hstack((processed[0], processed[1])),
+        np.hstack((processed[2], processed[3]))
+    ))
+    
+    stats_dict = {
+        'active_ids': len(active_ids),
+        'total_ids': next_global_id - 1,
+        'heatmap': None,
+        'map': None,
+        'frame': _frame_count,
+    }
+    
+    return grid, stats_dict
+
 
 def preprocess_gray(frame):
     """Enhance grayscale frames"""
@@ -164,194 +376,37 @@ def select_gid(reid_manager, feature, cam_id, frame_idx, current_gid=None):
 
 
 def main():
-    global next_global_id
+    """
+    Standalone mode - display in OpenCV window
+    """
+    print(f"[Standalone Mode] Running multi_cam_single_person.py")
+    print("Press 'q' to quit")
     
-    print(f"Loading video: {VIDEO_PATH}")
-    print(f"Model: {MODEL_PATH}")
-    
-    # Initialize ReID manager
-    reid_manager = ReIDManager(
-        model_name='osnet_x1_0',
-        device='cuda' if torch.cuda.is_available() else 'cpu',
-        max_features_per_id=MAX_FEATURES,
-        match_threshold=MATCH_THRESHOLD
-    )
-    
-    # Load YOLO model
-    yolo_model = YOLO(MODEL_PATH)
-    
-    # Unified loader
-    loader = get_loader('video', video_path=VIDEO_PATH)
-    props = loader.get_properties()
-
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = None
-    frame_count = 0
-    last_results = [None, None, None, None]
-
-    print("Processing... Press 'q' to quit")
-
-    for frame in loader:
-        frame_count += 1
-        h, w, _ = frame.shape
-
-        # Split frame into 4 cameras (2x2 grid)
-        cams = [
-            frame[0:h//2, 0:w//2],
-            frame[0:h//2, w//2:w],
-            frame[h//2:h, 0:w//2],
-            frame[h//2:h, w//2:w]
-        ]
-
-        processed = []
-        matched_gids = set()
-
-        for i, cam in enumerate(cams):
-            cam_display = cam.copy()
-            
-            # Preprocess based on frame type
-            if is_grayscale(cam):
-                proc_cam = preprocess_gray(cam)
-            else:
-                proc_cam = preprocess_color(cam)
-
-            # Run detection/tracking
-            if frame_count % FRAME_SKIP == 0:
-                results = yolo_model.track(
-                    proc_cam,
-                    persist=True,
-                    classes=[0],
-                    conf=0.15,
-                    iou=0.5,
-                    imgsz=640,
-                    verbose=False
-                )
-
-                if results is None or results[0].boxes is None:
-                    results = yolo_model(proc_cam, conf=0.15, imgsz=640, verbose=False)
-
-                last_results[i] = results
-            else:
-                results = last_results[i]
-
-            if results and results[0].boxes is not None:
-                boxes = results[0].boxes.xyxy.cpu().numpy()
-                confs = results[0].boxes.conf.cpu().numpy()
-
-                if results[0].boxes.id is not None:
-                    track_ids = results[0].boxes.id.cpu().numpy().astype(int)
-                else:
-                    track_ids = [None] * len(boxes)
-
-                for box, tid, conf in zip(boxes, track_ids, confs):
-                    x1, y1, x2, y2 = map(int, box)
-                    
-                    # Create key for local-to-global mapping
-                    if tid is None:
-                        cx = int((x1 + x2) / 2)
-                        cy = int((y1 + y2) / 2)
-                        key = (i, cx // 20, cy // 20)
-                    else:
-                        key = (i, tid)
-
-                    current_gid = local_to_global.get(key)
-
-                    # Assign new ID
-                    if current_gid is None:
-                        if not is_good_crop(box, conf, cam.shape):
-                            continue
-
-                        feat = reid_manager.extract_feature(cam, box)
-
-                        if feat is not None:
-                            selected_gid = select_gid(reid_manager, feat, i, frame_count, current_gid=None)
-
-                            if selected_gid is None:
-                                selected_gid = create_new_gid(reid_manager, feat, i, frame_count)
-
-                            update_global_db(reid_manager, selected_gid, feat)
-                        else:
-                            # Fallback ID
-                            selected_gid = next_global_id
-                            next_global_id += 1
-                            reid_manager.global_id_features[selected_gid] = deque(maxlen=MAX_FEATURES)
-                            id_confidence[selected_gid] = 0.3
-                            last_seen[selected_gid] = (i, frame_count)
-
-                        local_to_global[key] = selected_gid
-                        last_reid_frame[key] = frame_count
-                        update_confidence(selected_gid, matched=True)
-                        matched_gids.add(selected_gid)
-
-                    # Update existing ID
-                    else:
-                        reid_ready = (frame_count - last_reid_frame.get(key, -REID_INTERVAL)) >= REID_INTERVAL
-
-                        if reid_ready:
-                            if not is_good_crop(box, conf, cam.shape):
-                                continue
-
-                            feat = reid_manager.extract_feature(cam, box)
-
-                            if feat is not None:
-                                selected_gid = select_gid(reid_manager, feat, i, frame_count, current_gid=current_gid)
-
-                                local_to_global[key] = selected_gid
-                                update_global_db(reid_manager, selected_gid, feat)
-                                last_seen[selected_gid] = (i, frame_count)
-                                last_reid_frame[key] = frame_count
-                                update_confidence(selected_gid, matched=True)
-                                matched_gids.add(selected_gid)
-
-                    # Draw visualization
-                    if key in local_to_global:
-                        gid = local_to_global[key]
-                        label = f"GID {gid}"
-                        color = get_color(gid)
-                    else:
-                        label = f"TID {tid}" if tid is not None else "DET"
-                        color = (0, 0, 255)
-
-                    cv2.rectangle(cam_display, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(cam_display, label, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-            # Camera label
-            cv2.putText(cam_display, f"CAM {i+1}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            processed.append(cam_display)
-
-        # Update confidence for non-matched IDs
-        for gid in list(id_confidence.keys()):
-            if gid not in matched_gids:
-                update_confidence(gid, matched=False)
-
-        # Create 2x2 grid
-        grid = np.vstack((
-            np.hstack((processed[0], processed[1])),
-            np.hstack((processed[2], processed[3]))
-        ))
-
+    
+    while True:
+        grid, stats = run_pipeline()
+        
         # Initialize video writer
         if out is None:
-            output_dir = os.path.join('..', 'output')
+            output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, 'multi_cam_same_person.mp4')
             out = cv2.VideoWriter(output_path, fourcc, 20.0, (grid.shape[1], grid.shape[0]))
-
+        
         out.write(grid)
         cv2.imshow("Multi-Camera Tracking", grid)
-
+        
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-
-    loader.release()
+    
     if out is not None:
         out.release()
     cv2.destroyAllWindows()
     
     print("\nTracking complete!")
-    print(f"Total unique persons: {next_global_id - 1}")
+    print(f"Total unique persons: {stats['total_ids']}")
 
 
 if __name__ == "__main__":

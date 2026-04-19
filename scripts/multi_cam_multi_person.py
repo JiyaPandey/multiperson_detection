@@ -30,6 +30,144 @@ MATCH_THRESHOLD = 0.65
 MAX_FEATURES_PER_ID = 20
 SPATIAL_DISTANCE_THRESHOLD = 200
 
+# =========================
+# GLOBAL STATE FOR DASHBOARD
+# =========================
+_reid_manager = None
+_yolo_model = None
+_loader = None
+_all_global_ids = None
+_initialized = False
+
+
+def _initialize():
+    """Initialize global state (called once)"""
+    global _reid_manager, _yolo_model, _loader, _all_global_ids, _initialized
+    
+    if _initialized:
+        return
+    
+    print("[Multi-Cam-Multi] Initializing...")
+    
+    # Check if dataset exists
+    if not os.path.exists(BASE_PATH):
+        print(f"\nError: Dataset not found at {BASE_PATH}")
+        raise FileNotFoundError(f"Dataset not found at {BASE_PATH}")
+    
+    # Initialize ReID manager
+    _reid_manager = ReIDManager(
+        model_name='osnet_x1_0',
+        max_features_per_id=MAX_FEATURES_PER_ID,
+        match_threshold=MATCH_THRESHOLD,
+        spatial_distance_threshold=SPATIAL_DISTANCE_THRESHOLD
+    )
+    
+    # Load YOLO model
+    model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'yolov8n.pt')
+    if os.path.exists(model_path):
+        _yolo_model = YOLO(model_path)
+    else:
+        _yolo_model = YOLO("yolov8n.pt")
+    
+    # Unified loader for multi-camera
+    _loader = get_loader('multi_camera', base_path=BASE_PATH, camera_folders=CAM_FOLDERS)
+    _all_global_ids = set()
+    
+    _initialized = True
+    print("[Multi-Cam-Multi] Initialized!")
+
+
+def run_pipeline():
+    """
+    Process one frame from multi-camera dataset
+    Returns: (grid_frame, stats) or raises StopIteration when dataset ends
+    """
+    _initialize()
+
+    if getattr(_loader, "num_frames", 0) <= 0:
+        raise RuntimeError(f"No frames found under {BASE_PATH}")
+    
+    try:
+        frames, frame_idx = next(_loader)
+    except StopIteration:
+        # Reset loader and restart
+        _loader.current_idx = 0
+        _reid_manager.reset()
+        _all_global_ids.clear()
+        try:
+            frames, frame_idx = next(_loader)
+        except StopIteration as exc:
+            raise RuntimeError("No frames available after reset in multi-camera loader") from exc
+    
+    props = _loader.get_properties()
+    
+    # Store all detections across cameras
+    all_detections = []
+    used_ids_per_camera = defaultdict(set)
+    active_ids = set()
+    
+    # Process each camera
+    for cam_id, frame in enumerate(frames):
+        if frame is None:
+            continue
+        
+        # Run YOLO detection with tracking
+        results = _yolo_model.track(
+            frame,
+            persist=True,
+            classes=[0],  # Person class
+            conf=CONFIDENCE_THRESHOLD,
+            imgsz=640,
+            verbose=False,
+            tracker="bytetrack.yaml"
+        )
+        
+        if results[0].boxes is not None and len(results[0].boxes) > 0:
+            boxes = results[0].boxes.xyxy.cpu().numpy()
+            
+            # Process each detection
+            for box in boxes:
+                x1, y1, x2, y2 = box
+                center = ((x1 + x2) / 2, (y1 + y2) / 2)
+                
+                # Use ReID manager to get global ID
+                gid = _reid_manager.process(
+                    frame=frame,
+                    box=box,
+                    cam_id=cam_id,
+                    position=center,
+                    frame_idx=frame_idx,
+                    used_ids_in_frame=used_ids_per_camera
+                )
+                
+                if gid is not None:
+                    # Mark this ID as used in this camera
+                    used_ids_per_camera[cam_id].add(gid)
+                    active_ids.add(gid)
+                    
+                    all_detections.append({
+                        'cam_id': cam_id,
+                        'box': box,
+                        'gid': gid
+                    })
+    
+    # Visualize all cameras with detections
+    processed = visualize_detections(frames, all_detections, frame_idx, props['num_frames'])
+    
+    # Create grid layout
+    grid = create_grid_layout(processed)
+    _all_global_ids.update(active_ids)
+
+    stats_dict = {
+        'active_ids': len(active_ids),
+        'total_ids': len(_all_global_ids),
+        'frame': frame_idx + 1,
+        'heatmap': None,
+        'map': None,
+    }
+    
+    return grid, stats_dict
+
 
 # Removed - now using unified loader
 
@@ -155,116 +293,31 @@ def create_grid_layout(frames):
 
 
 def main():
-    print("Initializing Multi-Camera Multi-Person Tracking...")
-    print(f"Dataset path: {BASE_PATH}")
+    """
+    Standalone mode - display in OpenCV window
+    """
+    print("[Standalone Mode] Running multi_cam_multi_person.py")
+    print("Press 'q' to quit")
     
-    # Check if dataset exists
-    if not os.path.exists(BASE_PATH):
-        print(f"\nError: Dataset not found at {BASE_PATH}")
-        print("Please ensure EPFL-RLC_dataset is in the correct location.")
-        return
-    
-    # Initialize ReID manager
-    reid_manager = ReIDManager(
-        model_name='osnet_x1_0',
-        max_features_per_id=MAX_FEATURES_PER_ID,
-        match_threshold=MATCH_THRESHOLD,
-        spatial_distance_threshold=SPATIAL_DISTANCE_THRESHOLD
-    )
-    
-    # Load YOLO model
-    model_path = os.path.join('..', 'models', 'yolov8n.pt')
-    if not os.path.exists(model_path):
-        print(f"Warning: Model not found at {model_path}, using default")
-        yolo_model = YOLO("yolov8n.pt")
-    else:
-        yolo_model = YOLO(model_path)
-    
-    print("Loading camera frames...")
-    
-    # Unified loader for multi-camera
-    loader = get_loader('multi_camera', base_path=BASE_PATH, camera_folders=CAM_FOLDERS)
-    props = loader.get_properties()
-    
-    print(f"\nFound {props['num_cameras']} cameras with {props['num_frames']} frames each")
-    print(f"Detection confidence: {CONFIDENCE_THRESHOLD}")
-    print(f"Match threshold: {MATCH_THRESHOLD}")
-    print("Processing frames... Press 'q' to quit\n")
-
-    # Video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = None
-
-    for frames, frame_idx in loader:
-        print(f"\rProcessing frame {frame_idx+1}/{props['num_frames']} | Active IDs: {reid_manager.get_active_count()}", 
-              end="", flush=True)
-        
-        # Store all detections across cameras
-        all_detections = []
-        used_ids_per_camera = defaultdict(set)
-        
-        # Process each camera
-        for cam_id, frame in enumerate(frames):
-            if frame is None:
-                continue
-                
-            # Run YOLO detection with tracking
-            results = yolo_model.track(
-                frame,
-                persist=True,
-                classes=[0],  # Person class
-                conf=CONFIDENCE_THRESHOLD,
-                imgsz=640,
-                verbose=False,
-                tracker="bytetrack.yaml"
-            )
-            
-            if results[0].boxes is not None and len(results[0].boxes) > 0:
-                boxes = results[0].boxes.xyxy.cpu().numpy()
-                
-                # Process each detection
-                for box in boxes:
-                    x1, y1, x2, y2 = box
-                    center = ((x1 + x2) / 2, (y1 + y2) / 2)
-                    
-                    # Use ReID manager to get global ID
-                    gid = reid_manager.process(
-                        frame=frame,
-                        box=box,
-                        cam_id=cam_id,
-                        position=center,
-                        frame_idx=frame_idx,
-                        used_ids_in_frame=used_ids_per_camera
-                    )
-                    
-                    if gid is not None:
-                        # Mark this ID as used in this camera
-                        used_ids_per_camera[cam_id].add(gid)
-                        
-                        all_detections.append({
-                            'cam_id': cam_id,
-                            'box': box,
-                            'gid': gid
-                        })
-        
-        # Visualize all cameras with detections
-        processed = visualize_detections(frames, all_detections, frame_idx, min_len)
-        
-        # Create grid layout
-        grid = create_grid_layout(processed)
+    output_path = None
+    
+    while True:
+        grid, stats = run_pipeline()
         
         # Initialize video writer
         if out is None:
             h, w = grid.shape[:2]
-            output_dir = os.path.join('..', 'output')
+            output_dir = os.path.join(os.path.dirname(__file__), '..', 'output')
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, 'multi_cam_multi_person.mp4')
             out = cv2.VideoWriter(output_path, fourcc, 20, (w, h))
             print(f"\nSaving output to: {output_path}")
         
-        out.write(grid)
+        print(f"\rProcessing frame {stats['frame']} | Active IDs: {stats['active_ids']}", end="", flush=True)
         
-        # Display
+        out.write(grid)
         cv2.imshow("Multi-Camera Person Tracking", grid)
         
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -272,14 +325,12 @@ def main():
             break
     
     print("\n\nProcessing complete!")
-    print(f"Total unique persons tracked: {reid_manager.get_active_count()}")
+    print(f"Total unique persons tracked: {stats['total_ids']}")
     print(f"Output saved to: {output_path}")
-    print("\nPress any key in the video window to close...")
     
     if out:
         out.release()
     
-    cv2.waitKey(0)
     cv2.destroyAllWindows()
 
 
