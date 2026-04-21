@@ -404,6 +404,26 @@ def split_tri(frame):
     return cam1, cam2, cam3
 
 
+def _image_stretch(target, image, channels=None, clamp=False):
+    """Render image with width='stretch' and fallback for older Streamlit versions."""
+    kwargs = {"width": "stretch"}
+    if channels is not None:
+        kwargs["channels"] = channels
+    if clamp:
+        kwargs["clamp"] = True
+
+    try:
+        target.image(image, **kwargs)
+    except TypeError:
+        # Streamlit < width='stretch' support
+        fallback_kwargs = {"use_container_width": True}
+        if channels is not None:
+            fallback_kwargs["channels"] = channels
+        if clamp:
+            fallback_kwargs["clamp"] = True
+        target.image(image, **fallback_kwargs)
+
+
 # ---------------------------------------------------------------------------
 # ── UI MODULES ──────────────────────────────────────────────────────────────
 # ---------------------------------------------------------------------------
@@ -412,22 +432,19 @@ def render_analytics(stats: dict, scenario_key: str):
     """Heatmap + 2D Map — reads from stats dict only, never from video stream."""
     st.markdown("### Analytics")
 
-    heatmap = stats.get("heatmap")
-    map_2d  = stats.get("map")
-
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown("#### Heatmap")
-        if heatmap is not None:
-            st.image(heatmap, use_container_width=True)
+        if stats.get("heatmap") is not None:
+            _image_stretch(st, stats["heatmap"])
         else:
             st.info("No heatmap available")
 
     with col2:
         st.markdown("#### 2D Map")
-        if map_2d is not None:
-            st.image(map_2d, use_container_width=True)
+        if stats.get("map") is not None:
+            _image_stretch(st, stats["map"])
         else:
             st.info("No map available")
 
@@ -489,8 +506,9 @@ st.markdown(
 )
 
 # ── VIDEO PLAYER — zero-flicker st.empty() loop ──────────────────────────
-st.markdown("### Live Feed")
-video_placeholder = st.empty()
+with st.container():
+    st.markdown("### Live Feed")
+    frame_placeholder = st.empty()
 
 # ── ANALYTICS — fragment renders once now; _shared_state is updated each frame
 # The @st.fragment(run_every=1) fires whenever Streamlit is not blocked.
@@ -505,6 +523,7 @@ def _analytics_panel():
             f'<div class="error-card">⚠ Pipeline error: {error}</div>',
             unsafe_allow_html=True,
         )
+    st.write(stats)
     render_analytics(stats, scenario_key)
     render_metrics(stats)
 
@@ -535,7 +554,7 @@ if (
 while True:
     try:
         frame, stats = next(st.session_state.pipeline)
-        video_placeholder.image(frame, channels="BGR", use_container_width=True)
+        _image_stretch(frame_placeholder, frame, channels="BGR", clamp=True)
         _shared_state["stats"] = stats
         _shared_state["error"] = None
     except StopIteration:

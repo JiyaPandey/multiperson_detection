@@ -150,9 +150,6 @@ def run_pipeline():
     cv2.putText(heatmap_img, "HEATMAP", (10, 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
     
-    # Stack panels
-    right_panel = np.vstack((map_img, heatmap_img))
-    
     # Event detection
     fps = _loader.get_properties()['fps']
     for i in current_ids:
@@ -171,39 +168,10 @@ def run_pipeline():
     for i in expired:
         del _id_last_seen[i]
     
-    # Stats panel
-    stats = np.ones((stats_height, width + map_width, 3), dtype=np.uint8) * 20
-    
-    cv2.putText(stats, "REAL-TIME ANALYTICS", (20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 200, 0), 2)
-    cv2.putText(stats, f"Active: {len(current_ids)}", (20, 80),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 150), 2)
-    cv2.putText(stats, f"IDs: {[int(i) for i in current_ids]}", (20, 120),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 255), 2)
-    
     # Traffic warning
     if len(current_ids) > 8:
         cv2.putText(frame, "HIGH TRAFFIC", (20, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-    
-    # Event log
-    log_x = width + 10
-    cv2.putText(stats, "Events:", (log_x, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 200, 0), 2)
-    
-    for i, e in enumerate(_event_log):
-        color = (0, 255, 0) if "ENTERED" in e else (0, 0, 255)
-        cv2.putText(stats, e, (log_x, 70 + i * 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
-    
-    # Combine dashboard
-    top = np.hstack((frame, right_panel))
-    dashboard = np.vstack((top, stats))
-    
-    # Scale if needed
-    if dashboard.shape[1] > 1920:
-        scale = 1920 / dashboard.shape[1]
-        dashboard = cv2.resize(dashboard, (0, 0), fx=scale, fy=scale)
     
     stats_dict = {
         'active_ids': len(current_ids),
@@ -213,7 +181,7 @@ def run_pipeline():
         'frame': _frame_count,
     }
 
-    frame = dashboard  # single numpy image returned to dashboard
+    # Return only the camera frame to keep Streamlit layout clean.
     print("DEBUG FRAME TYPE:", type(frame))
     return frame, stats_dict
 
