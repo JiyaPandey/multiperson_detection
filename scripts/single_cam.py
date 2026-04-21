@@ -143,6 +143,17 @@ def run_pipeline():
     _heatmap.update(detections_for_heatmap)
     heatmap_img = _heatmap.render()
     heatmap_img = cv2.resize(heatmap_img, (map_width, height - map_height))
+
+    heatmap_img = cv2.normalize(heatmap_img, None, 0, 255, cv2.NORM_MINMAX)
+    heatmap_img = heatmap_img.astype(np.uint8)
+
+    if len(heatmap_img.shape) == 2:
+        heatmap_img = cv2.applyColorMap(heatmap_img, cv2.COLORMAP_JET)
+
+    map_img = map_img.astype(np.uint8)
+
+    if len(map_img.shape) == 2:
+        map_img = cv2.cvtColor(map_img, cv2.COLOR_GRAY2BGR)
     
     # Labels
     cv2.putText(map_img, f"2D MAP | People: {len(current_ids)}", (10, 20),
@@ -173,16 +184,18 @@ def run_pipeline():
         cv2.putText(frame, "HIGH TRAFFIC", (20, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
     
+    active_ids = current_ids
+    total_ids = len(_all_ids_seen)
+    frame_count = _frame_count
     stats_dict = {
-        'active_ids': len(current_ids),
-        'total_ids': len(_all_ids_seen),
-        'heatmap': heatmap_img,
-        'map': map_img,
-        'frame': _frame_count,
+        "heatmap": heatmap_img,
+        "map": map_img,
+        "active_ids": len(active_ids),
+        "total_ids": total_ids,
+        "frame": frame_count
     }
 
     # Return only the camera frame to keep Streamlit layout clean.
-    print("DEBUG FRAME TYPE:", type(frame))
     return frame, stats_dict
 
 

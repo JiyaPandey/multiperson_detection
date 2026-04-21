@@ -225,16 +225,28 @@ def run_pipeline():
     cv2.putText(map_img, "2D MAP", (8, map_height - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
     cv2.putText(heatmap_img, "HEATMAP", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
 
+    heatmap_img = cv2.normalize(heatmap_img, None, 0, 255, cv2.NORM_MINMAX)
+    heatmap_img = heatmap_img.astype(np.uint8)
+
+    if len(heatmap_img.shape) == 2:
+        heatmap_img = cv2.applyColorMap(heatmap_img, cv2.COLORMAP_JET)
+
+    map_img = map_img.astype(np.uint8)
+
+    if len(map_img.shape) == 2:
+        map_img = cv2.cvtColor(map_img, cv2.COLOR_GRAY2BGR)
+
+    total_ids = len(_all_global_ids)
+    frame_count = frame_idx + 1
     stats_dict = {
-        'active_ids': len(active_ids),
-        'total_ids': len(_all_global_ids),
-        'frame': frame_idx + 1,
-        'heatmap': heatmap_img,
-        'map': map_img,
+        "heatmap": heatmap_img,
+        "map": map_img,
+        "active_ids": len(active_ids),
+        "total_ids": total_ids,
+        "frame": frame_count
     }
     
     frame = grid  # single numpy image returned to dashboard
-    print("DEBUG FRAME TYPE:", type(frame))
     return frame, stats_dict
 
 

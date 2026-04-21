@@ -352,6 +352,7 @@ def _make_pipeline_gen(runner_func):
     while True:
         try:
             frame, stats = runner_func()
+            _shared_state["error"] = None
             if frame is not None and isinstance(frame, np.ndarray):
                 yield frame, stats
         except Exception as exc:
@@ -510,22 +511,21 @@ with st.container():
     st.markdown("### Live Feed")
     frame_placeholder = st.empty()
 
-# ── ANALYTICS — fragment renders once now; _shared_state is updated each frame
-# The @st.fragment(run_every=1) fires whenever Streamlit is not blocked.
-# Because the while loop below occupies the main thread, the fragment
-# re-reads _shared_state on each full-page rerun (e.g. scenario switch).
-@st.fragment(run_every=1)
+# ── ANALYTICS — render into one placeholder to avoid duplicated blocks
+analytics_placeholder = st.empty()
+
+
 def _analytics_panel():
-    stats = _shared_state.get("stats", {})
-    error = _shared_state.get("error")
-    if error:
-        st.markdown(
-            f'<div class="error-card">⚠ Pipeline error: {error}</div>',
-            unsafe_allow_html=True,
-        )
-    st.write(stats)
-    render_analytics(stats, scenario_key)
-    render_metrics(stats)
+    with analytics_placeholder.container():
+        stats = _shared_state.get("stats", {})
+        error = _shared_state.get("error")
+        if error:
+            st.markdown(
+                f'<div class="error-card">⚠ Pipeline error: {error}</div>',
+                unsafe_allow_html=True,
+            )
+        render_analytics(stats, scenario_key)
+        render_metrics(stats)
 
 
 _analytics_panel()
@@ -556,7 +556,7 @@ while True:
         frame, stats = next(st.session_state.pipeline)
         _image_stretch(frame_placeholder, frame, channels="BGR", clamp=True)
         _shared_state["stats"] = stats
-        _shared_state["error"] = None
+        _analytics_panel()
     except StopIteration:
         # Generator exhausted (video looped) — restart
         st.session_state.pipeline = _make_pipeline_gen(
