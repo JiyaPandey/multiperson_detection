@@ -14,7 +14,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from ultralytics import YOLO
-from collections import defaultdict
+from collections import defaultdict, deque
+from src.analytics.heatmap import Heatmap
 from src.reid.reid_manager import ReIDManager
 from src.utils.visualization import get_color, draw_bbox, draw_label
 from src.input.video_input import get_loader
@@ -37,12 +38,14 @@ _reid_manager = None
 _yolo_model = None
 _loader = None
 _all_global_ids = None
+_heatmap = None
+_map_tracks = None
 _initialized = False
 
 
 def _initialize():
     """Initialize global state (called once)"""
-    global _reid_manager, _yolo_model, _loader, _all_global_ids, _initialized
+    global _reid_manager, _yolo_model, _loader, _all_global_ids, _heatmap, _map_tracks, _initialized
     
     if _initialized:
         return
@@ -72,6 +75,8 @@ def _initialize():
     # Unified loader for multi-camera
     _loader = get_loader('multi_camera', base_path=BASE_PATH, camera_folders=CAM_FOLDERS)
     _all_global_ids = set()
+    _heatmap = None
+    _map_tracks = {}
     
     _initialized = True
     print("[Multi-Cam-Multi] Initialized!")
@@ -82,6 +87,8 @@ def run_pipeline():
     Process one frame from multi-camera dataset
     Returns: (grid_frame, stats) or raises StopIteration when dataset ends
     """
+    global _heatmap, _map_tracks
+
     _initialize()
 
     if getattr(_loader, "num_frames", 0) <= 0:
@@ -94,12 +101,26 @@ def run_pipeline():
         _loader.current_idx = 0
         _reid_manager.reset()
         _all_global_ids.clear()
+        _map_tracks.clear()
+        if _heatmap is not None:
+            _heatmap.reset()
         try:
             frames, frame_idx = next(_loader)
         except StopIteration as exc:
             raise RuntimeError("No frames available after reset in multi-camera loader") from exc
     
     props = _loader.get_properties()
+    num_cams = len(frames)
+    cell_w = 180
+    cell_h = 140
+    map_width = cell_w * max(1, num_cams)
+    map_height = cell_h
+
+    if _heatmap is None or _heatmap.width != map_width or _heatmap.height != map_height:
+        _heatmap = Heatmap(map_width, map_height, decay_factor=0.995, blur_kernel=25, weight=6.0)
+
+    if _map_tracks is None:
+        _map_tracks = {}
     
     # Store all detections across cameras
     all_detections = []
@@ -158,15 +179,63 @@ def run_pipeline():
     grid = create_grid_layout(processed)
     _all_global_ids.update(active_ids)
 
+    map_img = np.ones((map_height, map_width, 3), dtype=np.uint8) * 24
+    for cam_id in range(num_cams):
+        x0 = cam_id * cell_w
+        x1 = x0 + cell_w - 1
+        cv2.rectangle(map_img, (x0, 0), (x1, map_height - 1), (70, 70, 70), 1)
+        cv2.putText(map_img, f"CAM {cam_id + 1}", (x0 + 8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+
+    map_positions = []
+    detections_for_heatmap = []
+    for det in all_detections:
+        cam_id = det['cam_id']
+        frame = frames[cam_id]
+        if frame is None:
+            continue
+
+        box = det['box']
+        gid = det['gid']
+        x1, y1, x2, y2 = map(int, box)
+        cx = int((x1 + x2) / 2)
+        foot_y = y2
+
+        local_x = int((cx / max(1, frame.shape[1])) * cell_w)
+        local_y = int((foot_y / max(1, frame.shape[0])) * cell_h)
+        local_x = max(0, min(cell_w - 1, local_x))
+        local_y = max(0, min(cell_h - 1, local_y))
+
+        map_x = cam_id * cell_w + local_x
+        map_y = local_y
+        map_positions.append((gid, map_x, map_y))
+        detections_for_heatmap.append((map_x, map_y))
+
+    for gid, map_x, map_y in map_positions:
+        _map_tracks.setdefault(gid, deque(maxlen=20)).append((map_x, map_y))
+
+    for gid, pts in _map_tracks.items():
+        if len(pts) > 1:
+            cv2.polylines(map_img, [np.array(pts, dtype=np.int32)], False, get_color(gid), 1)
+
+    for gid, map_x, map_y in map_positions:
+        cv2.circle(map_img, (map_x, map_y), 3, get_color(gid), -1)
+
+    _heatmap.update(detections_for_heatmap)
+    heatmap_img = _heatmap.render(threshold=20)
+    cv2.putText(map_img, "2D MAP", (8, map_height - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
+    cv2.putText(heatmap_img, "HEATMAP", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+
     stats_dict = {
         'active_ids': len(active_ids),
         'total_ids': len(_all_global_ids),
         'frame': frame_idx + 1,
-        'heatmap': None,
-        'map': None,
+        'heatmap': heatmap_img,
+        'map': map_img,
     }
     
-    return grid, stats_dict
+    frame = grid  # single numpy image returned to dashboard
+    print("DEBUG FRAME TYPE:", type(frame))
+    return frame, stats_dict
 
 
 # Removed - now using unified loader

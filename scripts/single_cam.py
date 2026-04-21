@@ -213,6 +213,8 @@ def run_pipeline():
         'frame': _frame_count,
     }
 
+    frame = dashboard  # single numpy image returned to dashboard
+    print("DEBUG FRAME TYPE:", type(frame))
     return frame, stats_dict
 
 

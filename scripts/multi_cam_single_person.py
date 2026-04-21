@@ -18,6 +18,7 @@ from ultralytics import YOLO
 from torchreid.utils import FeatureExtractor
 from scipy.spatial.distance import cosine
 from collections import deque
+from src.analytics.heatmap import Heatmap
 from src.reid.reid_manager import ReIDManager
 from src.utils.visualization import get_color, draw_bbox, draw_label
 from src.input.video_input import get_loader
@@ -57,12 +58,14 @@ _yolo_model = None
 _loader = None
 _frame_count = 0
 _last_results = [None, None, None, None]
+_heatmap = None
+_map_tracks = None
 _initialized = False
 
 
 def _initialize():
     """Initialize global state (called once)"""
-    global _reid_manager, _yolo_model, _loader, _initialized
+    global _reid_manager, _yolo_model, _loader, _heatmap, _map_tracks, _initialized
     
     if _initialized:
         return
@@ -82,6 +85,8 @@ def _initialize():
     
     # Unified loader
     _loader = get_loader('video', video_path=VIDEO_PATH)
+    _heatmap = None
+    _map_tracks = {}
     
     _initialized = True
     print("[Multi-Cam-Single] Initialized!")
@@ -92,7 +97,7 @@ def run_pipeline():
     Process one frame and return 2x2 grid visualization
     Returns: (grid_frame, stats) or raises StopIteration when video ends
     """
-    global _frame_count, _last_results, next_global_id
+    global _frame_count, _last_results, _heatmap, _map_tracks, next_global_id
     
     _initialize()
     
@@ -107,10 +112,25 @@ def run_pipeline():
         last_seen.clear()
         last_reid_frame.clear()
         next_global_id = 1
+        _map_tracks.clear()
+        if _heatmap is not None:
+            _heatmap.reset()
         frame = next(_loader)
     
     _frame_count += 1
     h, w, _ = frame.shape
+    cam_h = h // 2
+    cam_w = w // 2
+    cell_w = 170
+    cell_h = 120
+    map_width = cell_w * 2
+    map_height = cell_h * 2
+
+    if _heatmap is None or _heatmap.width != map_width or _heatmap.height != map_height:
+        _heatmap = Heatmap(map_width, map_height, decay_factor=0.995, blur_kernel=25, weight=6.0)
+
+    if _map_tracks is None:
+        _map_tracks = {}
     
     # Split frame into 4 cameras (2x2 grid)
     cams = [
@@ -123,6 +143,8 @@ def run_pipeline():
     processed = []
     matched_gids = set()
     active_ids = set()
+    map_positions = []
+    detections_for_heatmap = []
     
     for i, cam in enumerate(cams):
         cam_display = cam.copy()
@@ -227,6 +249,19 @@ def run_pipeline():
                     active_ids.add(gid)
                     label = f"GID {gid}"
                     color = get_color(gid)
+
+                    cx = int((x1 + x2) / 2)
+                    foot_y = y2
+                    cam_col = i % 2
+                    cam_row = i // 2
+                    local_x = int((cx / max(1, cam.shape[1])) * cell_w)
+                    local_y = int((foot_y / max(1, cam.shape[0])) * cell_h)
+                    local_x = max(0, min(cell_w - 1, local_x))
+                    local_y = max(0, min(cell_h - 1, local_y))
+                    map_x = cam_col * cell_w + local_x
+                    map_y = cam_row * cell_h + local_y
+                    map_positions.append((gid, map_x, map_y))
+                    detections_for_heatmap.append((map_x, map_y))
                 else:
                     label = f"TID {tid}" if tid is not None else "DET"
                     color = (0, 0, 255)
@@ -250,16 +285,41 @@ def run_pipeline():
         np.hstack((processed[0], processed[1])),
         np.hstack((processed[2], processed[3]))
     ))
+
+    map_img = np.ones((map_height, map_width, 3), dtype=np.uint8) * 24
+    cv2.line(map_img, (cell_w, 0), (cell_w, map_height), (80, 80, 80), 1)
+    cv2.line(map_img, (0, cell_h), (map_width, cell_h), (80, 80, 80), 1)
+    cv2.putText(map_img, "CAM 1", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+    cv2.putText(map_img, "CAM 2", (cell_w + 8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+    cv2.putText(map_img, "CAM 3", (8, cell_h + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+    cv2.putText(map_img, "CAM 4", (cell_w + 8, cell_h + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+
+    for gid, map_x, map_y in map_positions:
+        _map_tracks.setdefault(gid, deque(maxlen=18)).append((map_x, map_y))
+
+    for gid, pts in _map_tracks.items():
+        if len(pts) > 1:
+            cv2.polylines(map_img, [np.array(pts, dtype=np.int32)], False, get_color(gid), 1)
+
+    for gid, map_x, map_y in map_positions:
+        cv2.circle(map_img, (map_x, map_y), 3, get_color(gid), -1)
+
+    _heatmap.update(detections_for_heatmap)
+    heatmap_img = _heatmap.render(threshold=20)
+    cv2.putText(map_img, "2D MAP", (8, map_height - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1)
+    cv2.putText(heatmap_img, "HEATMAP", (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
     
     stats_dict = {
         'active_ids': len(active_ids),
         'total_ids': next_global_id - 1,
-        'heatmap': None,
-        'map': None,
+        'heatmap': heatmap_img,
+        'map': map_img,
         'frame': _frame_count,
     }
     
-    return grid, stats_dict
+    frame = grid  # single numpy image returned to dashboard
+    print("DEBUG FRAME TYPE:", type(frame))
+    return frame, stats_dict
 
 
 def preprocess_gray(frame):
