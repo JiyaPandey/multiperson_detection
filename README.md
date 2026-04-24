@@ -128,6 +128,46 @@ multiperson_detection/
 
 ## Setup and Installation
 
+### Quick Start (Windows, first-time setup)
+
+Run one command from the project root:
+
+```powershell
+.\setup.ps1
+```
+
+This script will:
+
+- Validate Python version (requires 3.10+)
+- Create `.venv` if missing
+- Install all dependencies from `requirements.txt`
+
+Then run:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run src\ui\dashboard.py
+```
+
+### Quick Start (Linux/macOS, first-time setup)
+
+Run one command from the project root:
+
+```bash
+bash setup.sh
+```
+
+This script will:
+
+- Validate Python version (requires 3.10+)
+- Create `.venv` if missing
+- Install all dependencies from `requirements.txt`
+
+Then run:
+
+```bash
+./.venv/bin/python -m streamlit run src/ui/dashboard.py
+```
+
 ### Prerequisites
 
 - Python 3.10+ (3.11 recommended)
