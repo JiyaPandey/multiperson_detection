@@ -25,8 +25,38 @@ from src.input.video_input import get_loader
 
 
 # Config
-MODEL_PATH = os.path.join('..', 'models', 'yolov8n.pt')
-VIDEO_PATH = r"C:\Users\HP\Downloads\CCTV_Camera_Effect_-_Adobe_After_Effects_720p.mp4"
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+MODEL_PATH = os.path.join(BASE_DIR, 'models', 'yolov8n.pt')
+
+
+def _resolve_video_path():
+    """Resolve a valid input video path for local and container runs."""
+    data_dir = os.path.join(BASE_DIR, 'data')
+    env_video = os.getenv('MULTI_CAM_VIDEO_PATH')
+    candidates = [
+        env_video,
+        os.path.join(data_dir, 'CCTV_Camera_Effect_-_Adobe_After_Effects_720p.mp4'),
+        os.path.join(data_dir, 'ADL-Rundle-6-raw.webm'),
+        os.path.join(data_dir, 'input.mp4'),
+        os.path.join(data_dir, 'input.webm'),
+        os.path.join(data_dir, 'TUD-Stadtmitte-raw.webm'),
+    ]
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+
+    if os.path.isdir(data_dir):
+        for name in sorted(os.listdir(data_dir)):
+            if name.lower().endswith(('.mp4', '.webm', '.avi', '.mov', '.mkv')):
+                candidate = os.path.join(data_dir, name)
+                if os.path.exists(candidate):
+                    return candidate
+
+    raise FileNotFoundError(
+        "No readable video found for multi-cam single-person mode. "
+        "Set MULTI_CAM_VIDEO_PATH, or place a video file under data/"
+    )
 
 FRAME_SKIP = 2
 REID_INTERVAL = 5
@@ -84,7 +114,9 @@ def _initialize():
     _yolo_model = YOLO(MODEL_PATH)
     
     # Unified loader
-    _loader = get_loader('video', video_path=VIDEO_PATH)
+    video_path = _resolve_video_path()
+    print(f"[Multi-Cam-Single] Using video: {video_path}")
+    _loader = get_loader('video', video_path=video_path)
     _heatmap = None
     _map_tracks = {}
     

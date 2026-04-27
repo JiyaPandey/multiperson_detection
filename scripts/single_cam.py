@@ -34,6 +34,37 @@ _frame_count = 0
 _initialized = False
 
 
+def _resolve_video_path():
+    """Resolve a valid input video path for local and container runs."""
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    data_dir = os.path.join(base_dir, 'data')
+    env_video = os.getenv('SINGLE_CAM_VIDEO_PATH')
+    candidates = [
+        env_video,
+        os.path.join(data_dir, 'TUD-Stadtmitte-raw.webm'),
+        os.path.join(data_dir, 'input.mp4'),
+        os.path.join(data_dir, 'input.webm'),
+        os.path.join(data_dir, 'CCTV_Camera_Effect_-_Adobe_After_Effects_720p.mp4'),
+        os.path.join(data_dir, 'ADL-Rundle-6-raw.webm'),
+    ]
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+
+    if os.path.isdir(data_dir):
+        for name in sorted(os.listdir(data_dir)):
+            if name.lower().endswith(('.mp4', '.webm', '.avi', '.mov', '.mkv')):
+                candidate = os.path.join(data_dir, name)
+                if os.path.exists(candidate):
+                    return candidate
+
+    raise FileNotFoundError(
+        "No readable video found for single-cam mode. "
+        "Set SINGLE_CAM_VIDEO_PATH, or place a video file under data/"
+    )
+
+
 def _initialize():
     """Initialize global state (called once)"""
     global _model, _loader, _tracking_data, _heatmap, _id_last_seen, _event_log, _all_ids_seen, _initialized
@@ -41,10 +72,7 @@ def _initialize():
     if _initialized:
         return
     
-    video_path = r"C:\Users\HP\Downloads\TUD-Stadtmitte-raw.webm"
-    data_video = os.path.join(os.path.dirname(__file__), '..', 'data', 'input.mp4')
-    if os.path.exists(data_video):
-        video_path = data_video
+    video_path = _resolve_video_path()
     
     print(f"[Single-Cam] Initializing with video: {video_path}")
     
@@ -236,12 +264,5 @@ def track_people(video_path, confidence=0.5, max_history=12):
 
 
 if __name__ == "__main__":
-    # Default video path
-    video_path = r"C:\Users\HP\Downloads\TUD-Stadtmitte-raw.webm"
-    
-    # Check if video exists in data folder
-    data_video = os.path.join('..', 'data', 'input.mp4')
-    if os.path.exists(data_video):
-        video_path = data_video
-    
+    video_path = _resolve_video_path()
     track_people(video_path, confidence=0.5, max_history=12)
